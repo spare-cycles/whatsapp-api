@@ -1,0 +1,31 @@
+FROM golang:1.25 AS wacli-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/steipete/wacli.git /build/wacli
+WORKDIR /build/wacli
+RUN go get go.mau.fi/whatsmeow@latest && go mod tidy
+RUN CGO_ENABLED=1 go build -tags sqlite_fts5 -o /go/bin/wacli ./cmd/wacli
+
+FROM python:3.13-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=wacli-builder /go/bin/wacli /usr/local/bin/wacli
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir poetry==2.3.2 && \
+    poetry config virtualenvs.create false
+
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --only main --no-interaction --no-ansi --no-root
+
+COPY wacli_api/ wacli_api/
+
+EXPOSE 9471
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=10s \
+  CMD curl -fsS http://127.0.0.1:9471/health || exit 1
+CMD ["uvicorn", "wacli_api.main:app", "--host", "0.0.0.0", "--port", "9471"]

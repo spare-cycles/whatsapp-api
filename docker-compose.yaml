@@ -1,0 +1,24 @@
+services:
+  whatsapp-api:
+    build: .
+    container_name: whatsapp-api
+    restart: unless-stopped
+    # No ports exposed — internal-only service, reached via wacli-net
+    env_file: .env
+    volumes:
+      - wacli-data:/root/.wacli
+    networks:
+      - wacli-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9471/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  wacli-data:
+
+networks:
+  wacli-net:
+    external: true
