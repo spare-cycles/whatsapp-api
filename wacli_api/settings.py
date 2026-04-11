@@ -12,5 +12,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 9471
     session_db: str = "/root/.wacli/session.db"
+    store_db: str = "/root/.wacli/wacli.db"
+    redis_url: str = "redis://redis:6379"
     timeout: int = 60  # subprocess timeout in seconds
     log_level: str = "INFO"

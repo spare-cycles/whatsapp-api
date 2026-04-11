@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, Depends
 
+from wacli_api.db import get_db, ts_to_iso
 from wacli_api.deps import get_settings, verify_api_key
 from wacli_api.schemas import ApiResponse
 from wacli_api.settings import Settings
-from wacli_api.wacli import extract_data_list, run_wacli
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+
+def _map_chat(row: sqlite3.Row) -> dict:  # type: ignore[type-arg]
+    return {
+        "JID":           row["jid"],
+        "Kind":          row["kind"],
+        "Name":          row["name"] or "",
+        "LastMessageTS": ts_to_iso(row["last_message_ts"] or 0),
+    }
 
 
 @router.get("/chats")
@@ -17,13 +28,13 @@ def list_chats(
     limit: int = 10000,
     settings: Settings = Depends(get_settings),
 ) -> ApiResponse:
-    try:
-        result = run_wacli(
-            ["chats", "list", "--limit", str(limit)], timeout=settings.timeout
-        )
-        return ApiResponse(success=True, data=extract_data_list(result))
-    except RuntimeError as exc:
-        return ApiResponse(success=False, error=str(exc))
+    with get_db(settings.store_db) as conn:
+        rows = conn.execute(
+            "SELECT jid, kind, name, last_message_ts FROM chats"
+            " ORDER BY last_message_ts DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+    return ApiResponse(success=True, data=[_map_chat(r) for r in rows])
 
 
 @router.get("/chats/show")
@@ -31,10 +42,11 @@ def show_chat(
     jid: str,
     settings: Settings = Depends(get_settings),
 ) -> ApiResponse:
-    try:
-        result = run_wacli(
-            ["chats", "show", "--jid", jid], timeout=settings.timeout
-        )
-        return ApiResponse(success=True, data=result.get("data"))
-    except RuntimeError as exc:
-        return ApiResponse(success=False, error=str(exc))
+    with get_db(settings.store_db) as conn:
+        row = conn.execute(
+            "SELECT jid, kind, name, last_message_ts FROM chats WHERE jid = ?",
+            [jid],
+        ).fetchone()
+    if row is None:
+        return ApiResponse(success=False, error="chat not found")
+    return ApiResponse(success=True, data=_map_chat(row))

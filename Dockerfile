@@ -8,12 +8,10 @@ WORKDIR /build/wacli
 RUN go get go.mau.fi/whatsmeow@latest && go mod tidy
 RUN CGO_ENABLED=1 go build -tags sqlite_fts5 -o /go/bin/wacli ./cmd/wacli
 
-FROM python:3.13-slim
+FROM python:3.13-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 curl && \
     rm -rf /var/lib/apt/lists/*
-
-COPY --from=wacli-builder /go/bin/wacli /usr/local/bin/wacli
 
 WORKDIR /app
 
@@ -25,7 +23,14 @@ RUN poetry install --only main --no-interaction --no-ansi --no-root
 
 COPY wacli_api/ wacli_api/
 
+FROM base AS api
+
 EXPOSE 9471
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=10s \
   CMD curl -fsS http://127.0.0.1:9471/health || exit 1
 CMD ["uvicorn", "wacli_api.main:app", "--host", "0.0.0.0", "--port", "9471"]
+
+FROM base AS sync
+
+COPY --from=wacli-builder /go/bin/wacli /usr/local/bin/wacli
+COPY sync_worker.py /app/sync_worker.py

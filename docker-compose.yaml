@@ -1,12 +1,23 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp-api-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - wacli-net
+
   whatsapp-api:
-    build: .
+    build:
+      context: .
+      target: api
     container_name: whatsapp-api
     restart: unless-stopped
-    # No ports exposed — internal-only service, reached via wacli-net
     env_file: .env
     volumes:
-      - wacli-data:/root/.wacli
+      - wacli-data:/root/.wacli:ro
+      - uploads:/uploads
     networks:
       - wacli-net
     healthcheck:
@@ -16,8 +27,44 @@ services:
       retries: 3
       start_period: 10s
 
+  wacli-sync:
+    build:
+      context: .
+      target: sync
+    container_name: whatsapp-api-sync
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - wacli-data:/root/.wacli
+      - uploads:/uploads
+    networks:
+      - wacli-net
+    command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: whatsapp-api-ts
+    restart: unless-stopped
+    hostname: whatsapp-api-ts
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_HOSTNAME=whatsapp-api-ts
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./tailscale-serve.json:/config/serve.json:ro
+    networks:
+      - wacli-net
+    depends_on:
+      whatsapp-api:
+        condition: service_healthy
+
 volumes:
   wacli-data:
+  ts-state:
+  uploads:
+  redis-data:
 
 networks:
   wacli-net:

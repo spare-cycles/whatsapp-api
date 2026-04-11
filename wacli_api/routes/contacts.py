@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, Depends
 
+from wacli_api.db import get_db, ts_to_iso
 from wacli_api.deps import get_settings, verify_api_key
 from wacli_api.schemas import ApiResponse
 from wacli_api.settings import Settings
-from wacli_api.wacli import extract_data_list, run_wacli
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+# Name resolution priority matches wacli's GetContact SQL exactly:
+# COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), NULLIF(business_name,''), NULLIF(first_name,''), '')
+_CONTACT_SELECT = """
+    SELECT c.jid,
+           COALESCE(c.phone, ''),
+           COALESCE(NULLIF(a.alias, ''), ''),
+           COALESCE(NULLIF(c.full_name, ''), NULLIF(c.push_name, ''),
+                    NULLIF(c.business_name, ''), NULLIF(c.first_name, ''), ''),
+           c.updated_at
+    FROM contacts c
+    LEFT JOIN contact_aliases a ON a.jid = c.jid
+"""
 
 
 def _phone_from_jid(jid: str) -> str:
@@ -24,32 +39,38 @@ def _phone_from_jid(jid: str) -> str:
     return jid
 
 
+def _fetch_tags(conn: sqlite3.Connection, jid: str) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT tag FROM contact_tags WHERE jid = ?", [jid])]
+
+
+def _map_contact(row: tuple, tags: list[str]) -> dict:  # type: ignore[type-arg]
+    return {
+        "JID":       row[0],
+        "Phone":     row[1],
+        "Alias":     row[2],
+        "Name":      row[3],
+        "Tags":      tags,
+        "UpdatedAt": ts_to_iso(row[4] or 0),
+    }
+
+
 @router.get("/contacts")
 def show_contact(
     jid: str,
     settings: Settings = Depends(get_settings),
 ) -> ApiResponse:
-    try:
-        result = run_wacli(
-            ["contacts", "show", "--jid", jid], timeout=settings.timeout
-        )
-        data = result.get("data")
-        if isinstance(data, dict):
-            # Inject a display_name field with phone fallback
-            name = (
-                data.get("Name")
-                or data.get("FullName")
-                or data.get("PushName")
-                or data.get("name")
+    with get_db(settings.store_db) as conn:
+        row = conn.execute(_CONTACT_SELECT + "WHERE c.jid = ?", [jid]).fetchone()
+        if row is None:
+            return ApiResponse(
+                success=True,
+                data={"JID": jid, "display_name": _phone_from_jid(jid)},
             )
-            data["display_name"] = name if name else _phone_from_jid(jid)
-        return ApiResponse(success=True, data=data)
-    except RuntimeError:
-        # Contact not found — return phone number fallback instead of error
-        return ApiResponse(
-            success=True,
-            data={"JID": jid, "display_name": _phone_from_jid(jid)},
-        )
+        tags = _fetch_tags(conn, jid)
+
+    data = _map_contact(row, tags)
+    data["display_name"] = data["Name"] or _phone_from_jid(jid)
+    return ApiResponse(success=True, data=data)
 
 
 @router.get("/contacts/search")
@@ -57,10 +78,17 @@ def search_contacts(
     query: str,
     settings: Settings = Depends(get_settings),
 ) -> ApiResponse:
-    try:
-        result = run_wacli(
-            ["contacts", "search", "--query", query], timeout=settings.timeout
-        )
-        return ApiResponse(success=True, data=extract_data_list(result))
-    except RuntimeError as exc:
-        return ApiResponse(success=False, error=str(exc))
+    pattern = f"%{query}%"
+    sql = (
+        _CONTACT_SELECT
+        + "WHERE c.full_name    LIKE ?"
+        + "   OR c.push_name    LIKE ?"
+        + "   OR c.first_name   LIKE ?"
+        + "   OR c.business_name LIKE ?"
+        + "   OR c.phone        LIKE ?"
+        + "   OR a.alias        LIKE ?"
+    )
+    with get_db(settings.store_db) as conn:
+        rows = conn.execute(sql, [pattern] * 6).fetchall()
+        results = [_map_contact(r, _fetch_tags(conn, r[0])) for r in rows]
+    return ApiResponse(success=True, data=results)

@@ -1,7 +1,8 @@
-"""FastAPI dependencies: settings and API key auth."""
+"""FastAPI dependencies: settings, API key auth, and Redis client."""
 
 from __future__ import annotations
 
+import redis as _redis
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader
 
@@ -13,6 +14,11 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 def get_settings(request: Request) -> Settings:
     """Return the Settings instance stored on app.state."""
     return request.app.state.settings  # type: ignore[no-any-return]
+
+
+def get_redis(request: Request) -> _redis.Redis:  # type: ignore[type-arg]
+    """Return the shared Redis client stored on app.state."""
+    return request.app.state.redis  # type: ignore[no-any-return]
 
 
 def verify_api_key(

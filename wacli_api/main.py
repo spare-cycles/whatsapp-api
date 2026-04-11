@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import redis as _redis
 import uvicorn
 from fastapi import FastAPI
 
@@ -19,8 +20,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
     app.state.settings = settings
+    app.state.redis = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
     lid.reload(settings.session_db)
     yield
+    app.state.redis.close()
 
 
 app = FastAPI(title="wacli API", lifespan=lifespan)
