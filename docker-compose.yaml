@@ -41,6 +41,19 @@ services:
       - wacli-net
     command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
 
+  whatsapp-mcp:
+    build:
+      context: .
+      target: mcp
+    container_name: whatsapp-mcp
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - wacli-net
+    depends_on:
+      whatsapp-api:
+        condition: service_healthy
+
   tailscale:
     image: tailscale/tailscale:latest
     container_name: whatsapp-api-ts
@@ -58,6 +71,8 @@ services:
       - wacli-net
     depends_on:
       whatsapp-api:
+        condition: service_healthy
+      whatsapp-mcp:
         condition: service_healthy
 
 volumes:

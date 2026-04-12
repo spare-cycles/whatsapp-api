@@ -2,29 +2,52 @@
 
 from __future__ import annotations
 
-import sqlite3
+from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text as sa_text
+from sqlalchemy.engine import Engine
+from sqlmodel import Session, select
 
-from wacli_api.db import get_db, ts_to_iso
-from wacli_api.deps import get_settings, verify_api_key
+from wacli_api.database import get_engine, get_session
+from wacli_api.db import ts_to_iso
+from wacli_api.deps import verify_api_key
+from wacli_api.models import ContactOut, ContactTag
 from wacli_api.schemas import ApiResponse
-from wacli_api.settings import Settings
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 # Name resolution priority matches wacli's GetContact SQL exactly:
-# COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), NULLIF(business_name,''), NULLIF(first_name,''), '')
-_CONTACT_SELECT = """
-    SELECT c.jid,
-           COALESCE(c.phone, ''),
-           COALESCE(NULLIF(a.alias, ''), ''),
-           COALESCE(NULLIF(c.full_name, ''), NULLIF(c.push_name, ''),
-                    NULLIF(c.business_name, ''), NULLIF(c.first_name, ''), ''),
-           c.updated_at
-    FROM contacts c
-    LEFT JOIN contact_aliases a ON a.jid = c.jid
-"""
+# COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), NULLIF(business_name,''),
+#          NULLIF(first_name,''), '')
+_CONTACT_SQL = sa_text(
+    "SELECT c.jid,"
+    " COALESCE(c.phone, '') AS phone,"
+    " COALESCE(NULLIF(a.alias, ''), '') AS alias,"
+    " COALESCE(NULLIF(c.full_name, ''), NULLIF(c.push_name, ''),"
+    "          NULLIF(c.business_name, ''), NULLIF(c.first_name, ''), '') AS name,"
+    " c.updated_at"
+    " FROM contacts c"
+    " LEFT JOIN contact_aliases a ON a.jid = c.jid"
+    " WHERE c.jid = :jid"
+)
+
+_CONTACT_SEARCH_SQL = sa_text(
+    "SELECT c.jid,"
+    " COALESCE(c.phone, '') AS phone,"
+    " COALESCE(NULLIF(a.alias, ''), '') AS alias,"
+    " COALESCE(NULLIF(c.full_name, ''), NULLIF(c.push_name, ''),"
+    "          NULLIF(c.business_name, ''), NULLIF(c.first_name, ''), '') AS name,"
+    " c.updated_at"
+    " FROM contacts c"
+    " LEFT JOIN contact_aliases a ON a.jid = c.jid"
+    " WHERE c.full_name     LIKE :pattern"
+    "    OR c.push_name     LIKE :pattern"
+    "    OR c.first_name    LIKE :pattern"
+    "    OR c.business_name LIKE :pattern"
+    "    OR c.phone         LIKE :pattern"
+    "    OR a.alias         LIKE :pattern"
+)
 
 
 def _phone_from_jid(jid: str) -> str:
@@ -39,56 +62,66 @@ def _phone_from_jid(jid: str) -> str:
     return jid
 
 
-def _fetch_tags(conn: sqlite3.Connection, jid: str) -> list[str]:
-    return [r[0] for r in conn.execute("SELECT tag FROM contact_tags WHERE jid = ?", [jid])]
+def _build_contact_out(row: dict[str, Any], jid: str, tags: list[str]) -> ContactOut:
+    name = str(row.get("name") or "")
+    return ContactOut(
+        JID=jid,
+        Phone=str(row.get("phone") or ""),
+        Alias=str(row.get("alias") or ""),
+        Name=name,
+        Tags=tags,
+        UpdatedAt=ts_to_iso(int(row.get("updated_at") or 0)),
+        display_name=name or _phone_from_jid(jid),
+    )
 
 
-def _map_contact(row: tuple, tags: list[str]) -> dict:  # type: ignore[type-arg]
-    return {
-        "JID":       row[0],
-        "Phone":     row[1],
-        "Alias":     row[2],
-        "Name":      row[3],
-        "Tags":      tags,
-        "UpdatedAt": ts_to_iso(row[4] or 0),
-    }
+def _fetch_tags(session: Session, jid: str) -> list[str]:
+    return [
+        t.tag
+        for t in session.exec(select(ContactTag).where(ContactTag.jid == jid)).all()
+    ]
 
 
 @router.get("/contacts")
 def show_contact(
     jid: str,
-    settings: Settings = Depends(get_settings),
-) -> ApiResponse:
-    with get_db(settings.store_db) as conn:
-        row = conn.execute(_CONTACT_SELECT + "WHERE c.jid = ?", [jid]).fetchone()
-        if row is None:
-            return ApiResponse(
-                success=True,
-                data={"JID": jid, "display_name": _phone_from_jid(jid)},
-            )
-        tags = _fetch_tags(conn, jid)
-
-    data = _map_contact(row, tags)
-    data["display_name"] = data["Name"] or _phone_from_jid(jid)
-    return ApiResponse(success=True, data=data)
+    session: Session = Depends(get_session),
+    engine: Engine = Depends(get_engine),
+) -> ApiResponse[ContactOut]:
+    with engine.connect() as conn:
+        row = conn.execute(_CONTACT_SQL, {"jid": jid}).mappings().first()
+    if row is None:
+        return ApiResponse(
+            success=True,
+            data=ContactOut(
+                JID=jid,
+                Phone="",
+                Alias="",
+                Name="",
+                Tags=[],
+                UpdatedAt="0001-01-01T00:00:00Z",
+                display_name=_phone_from_jid(jid),
+            ),
+        )
+    tags = _fetch_tags(session, jid)
+    return ApiResponse(success=True, data=_build_contact_out(dict(row), jid, tags))
 
 
 @router.get("/contacts/search")
 def search_contacts(
     query: str,
-    settings: Settings = Depends(get_settings),
-) -> ApiResponse:
-    pattern = f"%{query}%"
-    sql = (
-        _CONTACT_SELECT
-        + "WHERE c.full_name    LIKE ?"
-        + "   OR c.push_name    LIKE ?"
-        + "   OR c.first_name   LIKE ?"
-        + "   OR c.business_name LIKE ?"
-        + "   OR c.phone        LIKE ?"
-        + "   OR a.alias        LIKE ?"
-    )
-    with get_db(settings.store_db) as conn:
-        rows = conn.execute(sql, [pattern] * 6).fetchall()
-        results = [_map_contact(r, _fetch_tags(conn, r[0])) for r in rows]
+    session: Session = Depends(get_session),
+    engine: Engine = Depends(get_engine),
+) -> ApiResponse[list[ContactOut]]:
+    with engine.connect() as conn:
+        rows = (
+            conn.execute(_CONTACT_SEARCH_SQL, {"pattern": f"%{query}%"})
+            .mappings()
+            .all()
+        )
+    results: list[ContactOut] = []
+    for row in rows:
+        jid = str(row["jid"])
+        tags = _fetch_tags(session, jid)
+        results.append(_build_contact_out(dict(row), jid, tags))
     return ApiResponse(success=True, data=results)

@@ -34,3 +34,11 @@ FROM base AS sync
 
 COPY --from=wacli-builder /go/bin/wacli /usr/local/bin/wacli
 COPY sync_worker.py /app/sync_worker.py
+
+FROM base AS mcp
+
+COPY mcp_server.py /app/mcp_server.py
+EXPOSE 9472
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=5s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9472/')" || exit 1
+CMD ["python", "mcp_server.py"]

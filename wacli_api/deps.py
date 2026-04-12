@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import redis as _redis
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader
 
+from wacli_api.redis_types import RedisClient
 from wacli_api.settings import Settings
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -16,7 +16,7 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings  # type: ignore[no-any-return]
 
 
-def get_redis(request: Request) -> _redis.Redis:  # type: ignore[type-arg]
+def get_redis(request: Request) -> RedisClient:
     """Return the shared Redis client stored on app.state."""
     return request.app.state.redis  # type: ignore[no-any-return]
 

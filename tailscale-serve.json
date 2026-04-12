@@ -7,6 +7,9 @@
   "Web": {
     "${TS_CERT_DOMAIN}:443": {
       "Handlers": {
+        "/mcp": {
+          "Proxy": "http://whatsapp-mcp:9472"
+        },
         "/": {
           "Proxy": "http://whatsapp-api:9471"
         }

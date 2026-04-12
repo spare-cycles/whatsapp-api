@@ -1,15 +1,17 @@
-"""Pydantic request/response models."""
+"""Pydantic request/response envelope models."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
+T = TypeVar("T")
 
-class ApiResponse(BaseModel):
+
+class ApiResponse(BaseModel, Generic[T]):
     success: bool
-    data: Any = None
+    data: T | None = None
     error: str | None = None
 
 

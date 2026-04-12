@@ -2,31 +2,54 @@
 
 from __future__ import annotations
 
-import sqlite3
+from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text as sa_text
+from sqlalchemy.engine import Engine
+from sqlmodel import Session, col, select
 
-from wacli_api.db import get_db, parse_time, ts_to_iso
-from wacli_api.deps import get_settings, verify_api_key
+from wacli_api.database import get_engine, get_session
+from wacli_api.db import parse_time, ts_to_iso
+from wacli_api.deps import verify_api_key
+from wacli_api.models import Message, MessageOut
 from wacli_api.schemas import ApiResponse
-from wacli_api.settings import Settings
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
-def _map_message(row: sqlite3.Row, snippet: str = "") -> dict:  # type: ignore[type-arg]
-    return {
-        "ChatJID":     row["chat_jid"],
-        "ChatName":    row["chat_name"] or "",
-        "MsgID":       row["msg_id"],
-        "SenderJID":   row["sender_jid"] or "",
-        "Timestamp":   ts_to_iso(row["ts"]),
-        "FromMe":      bool(row["from_me"]),
-        "Text":        row["text"] or "",
-        "DisplayText": row["display_text"] or "",
-        "MediaType":   row["media_type"] or "",
-        "Snippet":     snippet,
-    }
+def _map_message(m: Message, snippet: str = "") -> MessageOut:
+    return MessageOut(
+        ChatJID=m.chat_jid,
+        ChatName=m.chat_name or "",
+        MsgID=m.msg_id,
+        SenderJID=m.sender_jid or "",
+        Timestamp=ts_to_iso(m.ts),
+        FromMe=bool(m.from_me),
+        Text=m.text or "",
+        DisplayText=m.display_text or "",
+        MediaType=m.media_type or "",
+        Snippet=snippet,
+    )
+
+
+def _map_message_dict(d: dict[str, Any]) -> MessageOut:
+    """Map a raw SQL result row (FTS search) to MessageOut.
+
+    The FTS query aliases snippet(...) AS snip — mapped to the Snippet field.
+    """
+    return MessageOut(
+        ChatJID=str(d["chat_jid"]),
+        ChatName=str(d.get("chat_name") or ""),
+        MsgID=str(d["msg_id"]),
+        SenderJID=str(d.get("sender_jid") or ""),
+        Timestamp=ts_to_iso(int(d["ts"])),
+        FromMe=bool(d["from_me"]),
+        Text=str(d.get("text") or ""),
+        DisplayText=str(d.get("display_text") or ""),
+        MediaType=str(d.get("media_type") or ""),
+        Snippet=str(d.get("snip") or ""),  # query alias is "snip"
+    )
 
 
 @router.get("/messages")
@@ -35,52 +58,48 @@ def list_messages(
     after: str | None = None,
     before: str | None = None,
     limit: int = 10000,
-    settings: Settings = Depends(get_settings),
-) -> ApiResponse:
+    session: Session = Depends(get_session),
+) -> ApiResponse[dict[str, list[MessageOut]]]:
     try:
         after_ts = parse_time(after) if after else None
         before_ts = parse_time(before) if before else None
     except ValueError:
-        return ApiResponse(success=False, error="invalid time format (use RFC3339 or YYYY-MM-DD)")
+        return ApiResponse(
+            success=False,
+            error="invalid time format (use RFC3339 or YYYY-MM-DD)",
+        )
 
-    query = (
-        "SELECT chat_jid, chat_name, msg_id, sender_jid, ts, from_me, text, display_text, media_type"
-        " FROM messages WHERE chat_jid = ?"
-    )
-    args: list[object] = [chat]
+    stmt = select(Message).where(Message.chat_jid == chat)
     if after_ts is not None:
-        query += " AND ts > ?"
-        args.append(after_ts)
+        stmt = stmt.where(col(Message.ts) > after_ts)
     if before_ts is not None:
-        query += " AND ts < ?"
-        args.append(before_ts)
-    query += " ORDER BY ts DESC LIMIT ?"
-    args.append(limit)
+        stmt = stmt.where(col(Message.ts) < before_ts)
+    stmt = stmt.order_by(col(Message.ts).desc()).limit(limit)
 
-    with get_db(settings.store_db) as conn:
-        rows = conn.execute(query, args).fetchall()
-
-    return ApiResponse(success=True, data={"messages": [_map_message(r) for r in rows]})
+    msgs = session.exec(stmt).all()
+    return ApiResponse(
+        success=True,
+        data={"messages": [_map_message(m) for m in msgs]},
+    )
 
 
 @router.get("/messages/search")
 def search_messages(
     query: str,
-    settings: Settings = Depends(get_settings),
-) -> ApiResponse:
-    sql = (
+    engine: Engine = Depends(get_engine),
+) -> ApiResponse[dict[str, list[MessageOut]]]:
+    sql = sa_text(
         "SELECT m.chat_jid, m.chat_name, m.msg_id, m.sender_jid, m.ts, m.from_me,"
         " m.text, m.display_text, m.media_type,"
         " snippet(messages_fts, 0, '', '', '\u2026', 20) AS snip"
         " FROM messages_fts"
         " JOIN messages m ON m.rowid = messages_fts.rowid"
-        " WHERE messages_fts MATCH ?"
+        " WHERE messages_fts MATCH :q"
         " ORDER BY m.ts DESC"
     )
-    with get_db(settings.store_db) as conn:
-        rows = conn.execute(sql, [query]).fetchall()
-
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"q": query}).mappings().all()
     return ApiResponse(
         success=True,
-        data={"messages": [_map_message(r, r["snip"] or "") for r in rows]},
+        data={"messages": [_map_message_dict(dict(r)) for r in rows]},
     )

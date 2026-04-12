@@ -1,22 +1,8 @@
-"""Direct read-only SQLite access for wacli.db."""
+"""Time parsing and formatting utilities for wacli timestamps."""
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
-from datetime import datetime, timezone
-
-
-@contextmanager
-def get_db(path: str) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    try:
-        yield conn
-    finally:
-        conn.close()
+from datetime import UTC, datetime
 
 
 def parse_time(s: str) -> int:
@@ -29,11 +15,11 @@ def parse_time(s: str) -> int:
         return int(datetime.fromisoformat(s).timestamp())
     except ValueError:
         pass
-    return int(datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    return int(datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
 
 
 def ts_to_iso(unix: int) -> str:
-    """Convert Unix int → RFC3339 string, matching wacli's Go time.Time serialisation."""
+    """Convert Unix timestamp → RFC3339 string (matches wacli's Go time.Time format)."""
     if not unix:
         return "0001-01-01T00:00:00Z"
-    return datetime.fromtimestamp(unix, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(unix, tz=UTC).isoformat()

@@ -10,6 +10,9 @@ dependencies = [
     "pydantic-settings (>=2.0)",
     "python-multipart (>=0.0.18)",
     "redis (>=5.0)",
+    "httpx (>=0.28)",
+    "fastmcp (>=2.1)",
+    "sqlmodel (>=0.0.21)",
 ]
 
 [project.scripts]
@@ -22,7 +25,6 @@ packages = [{include = "wacli_api"}]
 ruff = ">=0.11"
 pyright = ">=1.1"
 pytest = ">=8"
-httpx = ">=0.28"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -46,6 +48,10 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "wacli_api/routes/**" = ["B008"]  # Depends() in function defaults is standard FastAPI
+"wacli_api/deps.py" = ["B008"]    # same
+# UP046: PEP 695 generic syntax is incompatible with `from __future__ import annotations`
+# when used with Pydantic BaseModel — the Generic[T] form is required here.
+"wacli_api/schemas.py" = ["UP046"]
 
 [tool.ruff.format]
 quote-style = "double"
