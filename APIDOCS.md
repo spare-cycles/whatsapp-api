@@ -57,8 +57,10 @@ Environment variables (all prefixed with `WACLI_`):
 | `WACLI_API_KEY` | _(none)_ | API key for authentication. Unset = no auth. |
 | `WACLI_API_HOST` | `0.0.0.0` | Bind address |
 | `WACLI_API_PORT` | `9471` | Listen port |
-| `WACLI_SESSION_DB` | `/root/.wacli/session.db` | Path to wacli's SQLite session database |
-| `WACLI_TIMEOUT` | `60` | Subprocess timeout in seconds |
+| `WACLI_SESSION_DB` | `/root/.wacli/session.db` | Path to wacli's SQLite session database (LID mapping) |
+| `WACLI_STORE_DB` | `/root/.wacli/wacli.db` | Path to wacli's main SQLite database (messages, chats, contacts) |
+| `WACLI_REDIS_URL` | `redis://redis:6379` | Redis connection URL |
+| `WACLI_TIMEOUT` | `60` | Send job timeout in seconds |
 | `WACLI_LOG_LEVEL` | `INFO` | Logging level |
 
 ---
@@ -69,7 +71,9 @@ Environment variables (all prefixed with `WACLI_`):
 
 #### `GET /health`
 
-Check WhatsApp authentication status. **No API key required.** Used as the Docker healthcheck.
+Check infrastructure status (SQLite + Redis reachability). **No API key required.** Used as the Docker healthcheck.
+
+`success` is `false` if SQLite is unreachable (triggers container restart). Redis failure is reported but does not affect `success`.
 
 **Request:**
 
@@ -83,21 +87,20 @@ GET /health
 {
   "success": true,
   "data": {
-    "authenticated": true,
-    "phone": "33650633719",
-    "platform": "smba",
-    "pushName": "Loup"
+    "db": true,
+    "redis": true
   }
 }
 ```
 
-If not authenticated:
+If SQLite is down:
 
 ```json
 {
-  "success": true,
+  "success": false,
   "data": {
-    "authenticated": false
+    "db": false,
+    "redis": true
   }
 }
 ```
@@ -108,7 +111,7 @@ If not authenticated:
 
 #### `GET /chats`
 
-List all WhatsApp conversations.
+List all WhatsApp conversations, ordered by most recent message.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -128,9 +131,9 @@ GET /chats?limit=5
   "data": [
     {
       "JID": "33650633719@s.whatsapp.net",
+      "Kind": "personal",
       "Name": "Alice",
-      "LastMessageTimestamp": "2026-04-08T14:30:00Z",
-      "UnreadCount": 0
+      "LastMessageTS": "2026-04-08T14:30:00Z"
     }
   ]
 }
@@ -157,11 +160,14 @@ GET /chats/show?jid=33650633719@s.whatsapp.net
   "success": true,
   "data": {
     "JID": "33650633719@s.whatsapp.net",
+    "Kind": "personal",
     "Name": "Alice",
-    "LastMessageTimestamp": "2026-04-08T14:30:00Z"
+    "LastMessageTS": "2026-04-08T14:30:00Z"
   }
 }
 ```
+
+If not found: `success: false`, `error: "chat not found"`.
 
 ---
 
@@ -190,7 +196,9 @@ GET /groups?limit=100
     {
       "JID": "120363044123456789@g.us",
       "Name": "Family Chat",
-      "ParticipantCount": 5
+      "OwnerJID": "33650633719@s.whatsapp.net",
+      "CreatedAt": "2024-01-15T10:00:00Z",
+      "UpdatedAt": "2026-04-08T14:30:00Z"
     }
   ]
 }
@@ -198,7 +206,7 @@ GET /groups?limit=100
 
 #### `GET /groups/show`
 
-Get live group info (fetched from WhatsApp servers, not local cache).
+Get group info from the local cache, including participants.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -218,13 +226,18 @@ GET /groups/show?jid=120363044123456789@g.us
   "data": {
     "JID": "120363044123456789@g.us",
     "Name": "Family Chat",
-    "Topic": "Weekend plans",
+    "OwnerJID": "33650633719@s.whatsapp.net",
+    "CreatedAt": "2024-01-15T10:00:00Z",
+    "UpdatedAt": "2026-04-08T14:30:00Z",
     "Participants": [
-      {"JID": "33650633719@s.whatsapp.net", "IsAdmin": true}
+      {"UserJID": "33650633719@s.whatsapp.net", "Role": "admin"},
+      {"UserJID": "14155551234@s.whatsapp.net", "Role": "member"}
     ]
   }
 }
 ```
+
+If not found: `success: false`, `error: "group not found"`.
 
 ---
 
@@ -232,13 +245,13 @@ GET /groups/show?jid=120363044123456789@g.us
 
 #### `GET /messages`
 
-Fetch messages from a specific chat within a time range.
+Fetch messages from a specific chat within a time range, ordered by most recent first.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `chat` | string | yes | | Chat JID |
-| `after` | string | no | | Start date (YYYY-MM-DD) |
-| `before` | string | no | | End date (YYYY-MM-DD) |
+| `after` | string | no | | Start timestamp (RFC3339 or YYYY-MM-DD). Exclusive. |
+| `before` | string | no | | End timestamp (RFC3339 or YYYY-MM-DD). Exclusive. |
 | `limit` | int | no | 10000 | Maximum messages to return |
 
 **Request:**
@@ -255,25 +268,33 @@ GET /messages?chat=33650633719@s.whatsapp.net&after=2026-04-01&before=2026-04-09
   "data": {
     "messages": [
       {
-        "MsgID": "3EB0A1B2C3D4E5F6",
-        "Timestamp": "2026-04-05T10:30:00Z",
-        "FromMe": false,
-        "SenderJID": "33650633719@s.whatsapp.net",
-        "Text": "Hello!",
-        "Body": "Hello!"
+        "ChatJID":     "33650633719@s.whatsapp.net",
+        "ChatName":    "Alice",
+        "MsgID":       "3EB0A1B2C3D4E5F6",
+        "SenderJID":   "33650633719@s.whatsapp.net",
+        "Timestamp":   "2026-04-05T10:30:00Z",
+        "FromMe":      false,
+        "Text":        "Hello!",
+        "DisplayText": "",
+        "MediaType":   "",
+        "Snippet":     ""
       }
     ]
   }
 }
 ```
 
+`DisplayText` holds caption text for media messages. `MediaType` is non-empty for media messages (e.g. `"image"`, `"video"`, `"audio"`, `"document"`). `Snippet` is only populated by the search endpoint (always `""` here).
+
+If the time format is invalid: `success: false`, `error: "invalid time format (use RFC3339 or YYYY-MM-DD)"`.
+
 #### `GET /messages/search`
 
-Full-text search across all messages (uses SQLite FTS5 when available).
+Full-text search across all messages using SQLite FTS5. Returns results ordered by most recent first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | yes | Search query |
+| `query` | string | yes | FTS5 search query |
 
 **Request:**
 
@@ -286,16 +307,26 @@ GET /messages/search?query=meeting+tomorrow
 ```json
 {
   "success": true,
-  "data": [
-    {
-      "MsgID": "3EB0A1B2C3D4E5F6",
-      "ChatJID": "33650633719@s.whatsapp.net",
-      "Text": "Let's have a meeting tomorrow at 3pm",
-      "Timestamp": "2026-04-07T16:00:00Z"
-    }
-  ]
+  "data": {
+    "messages": [
+      {
+        "ChatJID":     "33650633719@s.whatsapp.net",
+        "ChatName":    "Alice",
+        "MsgID":       "3EB0A1B2C3D4E5F6",
+        "SenderJID":   "33650633719@s.whatsapp.net",
+        "Timestamp":   "2026-04-07T16:00:00Z",
+        "FromMe":      false,
+        "Text":        "Let's have a meeting tomorrow at 3pm",
+        "DisplayText": "",
+        "MediaType":   "",
+        "Snippet":     "Let's have a meeting tomorrow…"
+      }
+    ]
+  }
 }
 ```
+
+`Snippet` contains an FTS5-extracted excerpt (up to 20 tokens) with the match context.
 
 ---
 
@@ -303,7 +334,7 @@ GET /messages/search?query=meeting+tomorrow
 
 #### `GET /contacts`
 
-Resolve a WhatsApp JID to contact information.
+Resolve a WhatsApp JID to contact information. If the JID is not found in the local database, a minimal response is returned using the phone number derived from the JID.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -315,27 +346,44 @@ Resolve a WhatsApp JID to contact information.
 GET /contacts?jid=33650633719@s.whatsapp.net
 ```
 
-**Response:**
+**Response (contact found):**
 
 ```json
 {
   "success": true,
   "data": {
-    "JID": "33650633719@s.whatsapp.net",
-    "Name": "Alice Dupont",
-    "FullName": "Alice Dupont",
-    "PushName": "Alice"
+    "JID":          "33650633719@s.whatsapp.net",
+    "Phone":        "+33650633719",
+    "Alias":        "",
+    "Name":         "Alice Dupont",
+    "Tags":         ["family"],
+    "UpdatedAt":    "2026-03-01T09:00:00Z",
+    "display_name": "Alice Dupont"
   }
 }
 ```
 
+**Response (contact not found in DB):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "JID":          "33650633719@s.whatsapp.net",
+    "display_name": "+33650633719"
+  }
+}
+```
+
+`Name` is resolved in priority order: `full_name` → `push_name` → `business_name` → `first_name`. `display_name` falls back to the phone number extracted from the JID if `Name` is empty. `Alias` is sourced from the `contact_aliases` table.
+
 #### `GET /contacts/search`
 
-Search contacts by name.
+Search contacts by name, phone, or alias.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | yes | Search query |
+| `query` | string | yes | Substring to match against name fields, phone, and alias |
 
 **Request:**
 
@@ -350,13 +398,19 @@ GET /contacts/search?query=alice
   "success": true,
   "data": [
     {
-      "JID": "33650633719@s.whatsapp.net",
-      "Name": "Alice Dupont",
-      "PushName": "Alice"
+      "JID":          "33650633719@s.whatsapp.net",
+      "Phone":        "+33650633719",
+      "Alias":        "",
+      "Name":         "Alice Dupont",
+      "Tags":         ["family"],
+      "UpdatedAt":    "2026-03-01T09:00:00Z",
+      "display_name": "Alice Dupont"
     }
   ]
 }
 ```
+
+Matches against `full_name`, `push_name`, `first_name`, `business_name`, `phone`, and `alias` (case-insensitive substring search).
 
 ---
 
@@ -364,7 +418,7 @@ GET /contacts/search?query=alice
 
 #### `POST /send/text`
 
-Send a text message.
+Send a text message. Blocks until the `wacli-sync` worker confirms delivery or the timeout elapses.
 
 **Request body (JSON):**
 
@@ -396,9 +450,11 @@ curl -X POST http://whatsapp-api:9471/send/text \
 }
 ```
 
+On timeout: `success: false`, `error: "send timed out"`.
+
 #### `POST /send/file`
 
-Send a file (image, video, audio, document). Uses multipart form upload.
+Send a file (image, video, audio, document). Uses multipart form upload. Blocks until confirmed or timeout.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -425,6 +481,8 @@ curl -X POST http://whatsapp-api:9471/send/file \
   }
 }
 ```
+
+On timeout: `success: false`, `error: "send timed out"`.
 
 ---
 
@@ -522,7 +580,7 @@ Application errors (wacli failures, timeouts) are returned in the envelope:
 {
   "success": false,
   "data": null,
-  "error": "wacli failed (exit 1): session not found"
+  "error": "send timed out"
 }
 ```
 
