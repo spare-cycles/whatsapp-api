@@ -9,12 +9,14 @@ services:
       - wacli-net
 
   whatsapp-api:
-    build:
-      context: .
-      target: api
+    image: ghcr.io/ephasme/whatsapp-api:latest
+    pull_policy: always
     container_name: whatsapp-api
     restart: unless-stopped
-    env_file: .env
+    environment:
+      WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL}
+      WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM}
+      WACLI_API_KEY: ${WACLI_API_KEY}
     volumes:
       - wacli-data:/root/.wacli:ro
       - uploads:/uploads
@@ -28,12 +30,13 @@ services:
       start_period: 10s
 
   wacli-sync:
-    build:
-      context: .
-      target: sync
+    image: ghcr.io/ephasme/wacli-sync:latest
+    pull_policy: always
     container_name: whatsapp-api-sync
     restart: unless-stopped
-    env_file: .env
+    environment:
+      WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL}
+      WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM}
     volumes:
       - wacli-data:/root/.wacli
       - uploads:/uploads
@@ -42,12 +45,12 @@ services:
     command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
 
   whatsapp-mcp:
-    build:
-      context: .
-      target: mcp
+    image: ghcr.io/ephasme/whatsapp-mcp:latest
+    pull_policy: always
     container_name: whatsapp-mcp
     restart: unless-stopped
-    env_file: .env
+    environment:
+      WACLI_API_KEY: ${WACLI_API_KEY}
     networks:
       - wacli-net
     depends_on:
@@ -60,10 +63,10 @@ services:
     restart: unless-stopped
     hostname: whatsapp-api-ts
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
-      - TS_HOSTNAME=whatsapp-api-ts
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_SERVE_CONFIG=/config/serve.json
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: whatsapp-api-ts
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
     volumes:
       - ts-state:/var/lib/tailscale
       - ./tailscale-serve.json:/config/serve.json:ro
