@@ -9,7 +9,7 @@ services:
       - wacli-net
 
   whatsapp-api:
-    image: ghcr.io/ephasme/whatsapp-api:latest
+    image: ghcr.io/spare-cycles/whatsapp-api:latest
     pull_policy: always
     container_name: whatsapp-api
     restart: unless-stopped
@@ -30,7 +30,7 @@ services:
       start_period: 10s
 
   wacli-sync:
-    image: ghcr.io/ephasme/wacli-sync:latest
+    image: ghcr.io/spare-cycles/wacli-sync:latest
     pull_policy: always
     container_name: whatsapp-api-sync
     restart: unless-stopped
@@ -45,7 +45,7 @@ services:
     command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
 
   whatsapp-mcp:
-    image: ghcr.io/ephasme/whatsapp-mcp:latest
+    image: ghcr.io/spare-cycles/whatsapp-mcp:latest
     pull_policy: always
     container_name: whatsapp-mcp
     restart: unless-stopped
