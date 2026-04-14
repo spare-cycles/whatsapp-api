@@ -44,40 +44,6 @@ services:
       - wacli-net
     command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
 
-  whatsapp-mcp:
-    image: ghcr.io/spare-cycles/whatsapp-mcp:latest
-    pull_policy: always
-    container_name: whatsapp-mcp
-    restart: unless-stopped
-    environment:
-      WACLI_API_KEY: ${WACLI_API_KEY}
-    networks:
-      - wacli-net
-    depends_on:
-      whatsapp-api:
-        condition: service_healthy
-
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: whatsapp-api-ts
-    restart: unless-stopped
-    hostname: whatsapp-api-ts
-    environment:
-      TS_AUTHKEY: ${TS_AUTHKEY}
-      TS_HOSTNAME: whatsapp-api-ts
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_SERVE_CONFIG: /config/serve.json
-    volumes:
-      - ts-state:/var/lib/tailscale
-      - ./tailscale-serve.json:/config/serve.json:ro
-    networks:
-      - wacli-net
-    depends_on:
-      whatsapp-api:
-        condition: service_healthy
-      whatsapp-mcp:
-        condition: service_healthy
-
 volumes:
   wacli-data:
   ts-state:
