@@ -1,0 +1,77 @@
+# documentation: https://github.com/spare-cycles/whatsapp-api
+# slogan: Self-hosted WhatsApp HTTP API with background sync worker
+# tags: whatsapp,api,messaging,automation,bot
+#
+# Routing note: the whatsapp-api service uses SERVICE_FQDN_WHATSAPPAPI_9471=/
+# which tells Coolify (with Traefik) to auto-generate an FQDN and route it to
+# container port 9471. No `:9471` suffix in the UI domain field is needed.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  whatsapp-api:
+    image: ghcr.io/spare-cycles/whatsapp-api:latest
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Coolify auto-generates the public FQDN and wires Traefik labels to port 9471.
+      SERVICE_FQDN_WHATSAPPAPI_9471: /
+      # Auto-generated 64-char API key, shared with wacli-sync via the same magic var.
+      WACLI_API_KEY: ${SERVICE_PASSWORD_64_APIKEY}
+      # User-configurable device identity (editable in the Coolify env-vars UI).
+      WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL:-Coolify}
+      WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM:-Chrome}
+      # Redis reachable by service name on the Coolify-managed network.
+      WACLI_REDIS_URL: redis://redis:6379
+    volumes:
+      - wacli-data:/root/.wacli:ro
+      - uploads:/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9471/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  wacli-sync:
+    image: ghcr.io/spare-cycles/wacli-sync:latest
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      WACLI_API_KEY: ${SERVICE_PASSWORD_64_APIKEY}
+      WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL:-Coolify}
+      WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM:-Chrome}
+      WACLI_REDIS_URL: redis://redis:6379
+    volumes:
+      - wacli-data:/root/.wacli
+      - uploads:/uploads
+    command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
+    healthcheck:
+      # Healthy iff the wacli sync process is running. /proc/*/comm holds the
+      # 15-char process name, so a match on exactly "wacli" means `wacli sync`
+      # is alive. No pgrep/procps needed in the slim image.
+      test: ["CMD-SHELL", "cat /proc/[0-9]*/comm 2>/dev/null | grep -qxF wacli"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  wacli-data:
+  uploads:
+  redis-data:
