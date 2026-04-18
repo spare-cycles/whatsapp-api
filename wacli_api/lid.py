@@ -11,14 +11,14 @@ lid_map: dict[str, str] = {}
 
 
 def loadlid_map(db_path: str) -> dict[str, str]:
-    """Read the whatsmeowlid_map table from wacli's session SQLite DB.
+    """Read the whatsmeow_lid_map table from wacli's session SQLite DB.
 
     Returns a dict mapping bare LID numbers to phone numbers.
     Returns an empty dict if the file is missing, locked, or unreadable.
     """
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        rows = conn.execute("SELECT lid, pn FROM whatsmeowlid_map").fetchall()
+        rows = conn.execute("SELECT lid, pn FROM whatsmeow_lid_map").fetchall()
         conn.close()
         mapping = {str(row[0]): str(row[1]) for row in rows}
         logger.info("Loaded %d LID-to-phone mappings from %s", len(mapping), db_path)
