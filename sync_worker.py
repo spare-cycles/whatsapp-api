@@ -40,7 +40,7 @@ def _make_client() -> _SyncRedis:
             port=parsed.port or 6379,
             db=int((parsed.path or "").lstrip("/") or "0"),
             password=parsed.password,
-            username=parsed.username,
+            username=parsed.username or None,
             decode_responses=True,
         ),
     )
