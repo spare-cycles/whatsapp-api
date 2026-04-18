@@ -32,6 +32,4 @@ def health(
     except Exception:
         redis_ok = False
 
-    # Only SQLite failure makes the endpoint unhealthy (→ Docker healthcheck restart).
-    # Redis failure is reported but does not trigger a container restart.
-    return ApiResponse(success=db_ok, data={"db": db_ok, "redis": redis_ok})
+    return ApiResponse(success=db_ok and redis_ok, data={"db": db_ok, "redis": redis_ok})

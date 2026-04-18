@@ -10,10 +10,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --requirepass ${SERVICE_PASSWORD_REDIS}
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${SERVICE_PASSWORD_REDIS}", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -34,7 +35,7 @@ services:
       WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL:-Coolify}
       WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM:-Chrome}
       # Redis reachable by service name on the Coolify-managed network.
-      WACLI_REDIS_URL: redis://redis:6379
+      WACLI_REDIS_URL: redis://:${SERVICE_PASSWORD_REDIS}@redis:6379
     volumes:
       - wacli-data:/root/.wacli:ro
       - uploads:/uploads
@@ -56,16 +57,13 @@ services:
       WACLI_API_KEY: ${SERVICE_PASSWORD_64_APIKEY}
       WACLI_DEVICE_LABEL: ${WACLI_DEVICE_LABEL:-Coolify}
       WACLI_DEVICE_PLATFORM: ${WACLI_DEVICE_PLATFORM:-Chrome}
-      WACLI_REDIS_URL: redis://redis:6379
+      WACLI_REDIS_URL: redis://:${SERVICE_PASSWORD_REDIS}@redis:6379
     volumes:
       - wacli-data:/root/.wacli
       - uploads:/uploads
     command: ["sh", "-c", "python /app/sync_worker.py & exec wacli sync --follow --refresh-groups"]
     healthcheck:
-      # Healthy iff the wacli sync process is running. /proc/*/comm holds the
-      # 15-char process name, so a match on exactly "wacli" means `wacli sync`
-      # is alive. No pgrep/procps needed in the slim image.
-      test: ["CMD-SHELL", "cat /proc/[0-9]*/comm 2>/dev/null | grep -qxF wacli"]
+      test: ["CMD-SHELL", "cat /proc/[0-9]*/comm 2>/dev/null | grep -qxF wacli && python -c \"import redis,os; redis.from_url(os.environ['WACLI_REDIS_URL']).ping()\""]
       interval: 30s
       timeout: 5s
       retries: 3
