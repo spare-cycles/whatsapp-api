@@ -32,4 +32,6 @@ def health(
     except Exception:
         redis_ok = False
 
-    return ApiResponse(success=db_ok and redis_ok, data={"db": db_ok, "redis": redis_ok})
+    return ApiResponse(
+        success=db_ok and redis_ok, data={"db": db_ok, "redis": redis_ok}
+    )
